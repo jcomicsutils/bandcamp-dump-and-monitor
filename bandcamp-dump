@@ -116,7 +116,7 @@ while IFS= read -r album_url; do
     bandcamp-dl \
     --no-confirm \
         --base-dir="$PWD" \
-        --keep-upper --keep-spaces --embed-art \
+        --keep-upper --keep-spaces --embed-art --embed-lyrics \
         --template "%{album} [${item_id}]/%{track} - %{title}" \
       "$cleaned_url" # Use the cleaned variable
 

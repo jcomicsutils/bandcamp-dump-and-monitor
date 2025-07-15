@@ -84,6 +84,7 @@ def main():
 
     # This dictionary will persist across bandcamp-dump restarts, but not monitor.py restarts.
     failure_counts = {}
+    urls_to_remove_this_run = []
 
     print("--- Script Monitor Started ---")
     print(f"Monitoring: '{' '.join(COMMAND)}'")
@@ -190,6 +191,9 @@ def main():
         sys.exit(0)
 
     except KeyboardInterrupt:
+        if 'urls_to_remove_this_run' in locals() and urls_to_remove_this_run:
+            print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] User interrupted. Removing successfully downloaded URLs from this session...")
+            remove_urls_from_list(urls_to_remove_this_run, URL_LIST_FILE)
         print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitor stopped by user. Exiting.")
         sys.exit(0)
 

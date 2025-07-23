@@ -15,7 +15,7 @@ This project consists of two main components:
 * **Resilient Downloads**: The monitor script ensures that if a download fails or the script crashes, it will be automatically restarted.
 * **Failure Management**: Individual URLs that repeatedly fail to download are automatically removed from the queue and logged for manual review, preventing the entire process from getting stuck.
 * **Smart Cleanup**: Successfully downloaded items are removed from the list, meaning you can stop and resume the process at any time without re-downloading anything.
-* **Unique Naming**: Automatically extracts a unique ID for each album to prevent overwriting albums that might share the same name. **This is experimental, it retrieves a JSON from the source code and assumes the first integer to appear to be the item_id**
+* **Unique Naming**: Automatically extracts a unique ID for each album to prevent overwriting albums that might share the same name. If two tracks are identified as having the same title and track number, it'll add the track_id to the filename, to prevent bc-dl from skipping tracks that would have the same filename. This only happens when the code identifies this problem, doing this for all tracks would require a lot of requests to bandcamp, to avoid this, it only happens when needed.
 * **Automated Scraping (Not Recommended)**: The script has a legacy feature to scrape URLs from a Bandcamp page, but this is be unreliable.
 
 ## How It Works

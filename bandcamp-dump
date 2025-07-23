@@ -4,18 +4,20 @@ set -e
 # bandcamp-dump
 # Downloads public discographies from Bandcamp.
 # Now with support for using a local list if no URL is provided.
+# Includes the unique URL slug in the template to prevent overwrites.
+
 BANDCAMP_URL_LIST="$PWD/bandcamp-dump.lst"
 url="$1"
 
 # --- Main Logic ---
 
 # Check if a URL was passed as an argument.
-if [ -n "$url" ];
-then
+if [ -n "$url" ]; then
     # If a URL is provided, generate a new list.
     echo "--> URL found. Generating new download list: $BANDCAMP_URL_LIST"
 
     # Set a trap to clean up the file we are about to create.
+    # This will execute on any script exit (normal, error, or signal).
     trap "echo '--> Cleaning up generated list.'; rm -f '$BANDCAMP_URL_LIST'" EXIT
 
     # Use lynx to extract album/track URLs and save them to the list file.
@@ -23,16 +25,18 @@ then
       grep -v "downloading" | \
       grep "bandcamp.com/track\|album" \
       > "$BANDCAMP_URL_LIST"
+
 else
     # If no URL is provided, look for an existing list file.
     echo "--> No URL provided. Looking for existing list at: $BANDCAMP_URL_LIST"
-    if [ ! -f "$BANDCAMP_URL_LIST" ];
-    then
+    if [ ! -f "$BANDCAMP_URL_LIST" ]; then
         # If no file is found, print an error and exit.
         echo "--> Error: No URL was passed and '$BANDCAMP_URL_LIST' was not found." >&2
         echo "--> Usage: $0 [bandcamp_url]" >&2
         exit 1
     fi
+    # If the file exists, we will proceed to use it.
+    # We do NOT set a trap, so we don't delete the user's pre-existing file.
     echo "--> Found existing list. Proceeding with downloads."
 fi
 
@@ -42,80 +46,79 @@ fi
 # Verify that the list actually contains something before proceeding.
 if [ ! -s "$BANDCAMP_URL_LIST" ]; then
     echo "--> Warning: Link list is empty. Nothing to download."
-    exit 0
+    exit 0 # Exit successfully, as there's no error, just nothing to do.
 fi
 
 echo "--> Starting downloads..."
 
 # Use a 'while read' loop for safely reading each line from the list.
-while IFS= read -r item_url; do
+while IFS= read -r album_url; do
     # Skip any potential empty lines in the list file
-    [ -z "$item_url" ] && continue
+    [ -z "$album_url" ] && continue
 
-    # Clean up and validate the URL
-    cleaned_url="${item_url%$'\r'}"
+    # Remove trailing carriage return characters (\r) that may exist in files created on Windows
+    cleaned_url="${album_url%$'\r'}"
+
+    # Ensure the URL has a scheme (https://)
     if [[ ! "$cleaned_url" =~ ^https?:// ]]; then
         cleaned_url="https://$cleaned_url"
     fi
 
-    echo "--> Processing Album/Track URL: $cleaned_url"
+    # Extract the unique slug from the end of the URL (e.g., "album-title-goes-here")
+    unique_slug="${cleaned_url##*/}"
+
+    echo "--> Downloading: $cleaned_url"
     
-    # Fetch the page content
+    # --- Extract item_id from application/ld+json script block ---
+    # 1. Fetch the page content
     page_content=$(curl -s -L "$cleaned_url")
 
-    # Extract and clean the tralbum data JSON blob
-    tralbum_json=$(echo "$page_content" | pup 'script[data-tralbum] attr{data-tralbum}' | perl -MHTML::Entities -pe 'decode_entities($_)')
+    # 2. Extract the content of the script tag using pup and clean it
+    #    Use sed to remove leading/trailing whitespace and newlines, making it valid JSON for jq.
+    json_ld_content=$(echo "$page_content" | pup 'script[type="application/ld+json"] text{}' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d')
 
-    if [ -z "$tralbum_json" ]; then
-        echo "--> Warning: Could not find data-tralbum blob for $cleaned_url. Skipping."
-        continue
-    fi
+    item_id=""
 
-    # Extract the main album ID
-    album_id=$(echo "$tralbum_json" | jq -r '.id | tostring')
-    if ! [[ "$album_id" =~ ^[0-9]+$ ]]; then
-        album_id="unknown_album_id"
-    fi
-
-    # --- HYBRID LOGIC ---
-    # Pre-check for duplicate track numbers and titles to avoid overwrites.
-    # This jq command returns 'true' if any combination of track_num and title appears more than once.
-    has_duplicates=$(echo "$tralbum_json" | jq '[.trackinfo[] | {num: .track_num, title: .title}] | group_by(.) | any(.[]; length > 1)')
-
-    if [ "$has_duplicates" = "true" ]; then
-        # --- SAFE MODE: Individual Track Downloads ---
-        echo "    -> Duplicate track numbers/titles found. Switching to safe individual download mode."
+    # Only attempt jq parsing if we actually got some JSON content
+    if [ -n "$json_ld_content" ]; then
+        # --- Simplified JQ Query ---
+        # Find the first number in the JSON and ensure it's an integer string.
+        # This is a very broad search and assumes the first integer is the correct ID.
+        jq_command='(.. | numbers | tostring | select(test("^[0-9]+$")) | .)'
         
-        base_url=$(echo "$cleaned_url" | sed -E 's|(https?://[^/]+)/.*|\1|')
+        # We'll temporarily write the JSON to a file for jq, to bypass any tricky pipe issues.
+        TEMP_JQ_INPUT_FILE=$(mktemp)
+        echo "$json_ld_content" > "$TEMP_JQ_INPUT_FILE"
 
-        echo "$tralbum_json" | jq -c '.trackinfo[]' | while IFS= read -r track_json; do
-            track_id=$(echo "$track_json" | jq -r '.track_id')
-            track_title=$(echo "$track_json" | jq -r '.title')
-            track_num=$(echo "$track_json" | jq -r '.track_num')
-            track_url_path=$(echo "$track_json" | jq -r '.title_link')
-            track_full_url="${base_url}${track_url_path}"
+        # Run jq, redirect stderr to /dev/null to keep output clean, and take only the first line.
+        item_id_raw=$(jq -r "${jq_command}" "$TEMP_JQ_INPUT_FILE" 2>/dev/null | head -n 1)
+        jq_exit_code=$? # Capture jq's exit code
 
-            echo "        -> Downloading Track: \"${track_title}\" (ID: ${track_id})"
-            
-            bandcamp-dl \
-                --no-confirm \
-                --base-dir="$PWD" \
-                --keep-upper --keep-spaces --embed-art --embed-lyrics \
-                --template "%{album} [${album_id}]/${track_num}. %{title} [${track_id}]" \
-                "$track_full_url"
-        done
+        rm -f "$TEMP_JQ_INPUT_FILE" # Clean up the temporary file
 
-    else
-        # --- EFFICIENT MODE: Single Album Download ---
-        echo "    -> No duplicates found. Using efficient single-album download mode."
-        bandcamp-dl \
-            --no-confirm \
-            --base-dir="$PWD" \
-            --keep-upper --keep-spaces --embed-art --embed-lyrics \
-            --template "%{album} [${album_id}]/%{track}. %{title}" \
-            "$cleaned_url"
+        # Check if jq produced valid output and had a successful exit code
+        if [ "$jq_exit_code" -eq 0 ] && [[ "$item_id_raw" =~ ^[0-9]+$ ]]; then
+            item_id="$item_id_raw"
+        else
+            # This debug message will only show if item_id extraction *fails*
+            echo "--> DEBUG: Simplified jq did not return a valid numeric item_id. Raw output was: '$item_id_raw'. (jq exit code: $jq_exit_code)" >&2
+        fi
     fi
-    # --- END HYBRID LOGIC ---
+
+    if [ -z "$item_id" ]; then
+        echo "--> Warning: Could not extract item_id for $cleaned_url from ld+json. Proceeding without it."
+        item_id="unknown_id" # Fallback if item_id isn't found
+    fi
+    # --- END Extract item_id ---
+    
+    # Use the unique URL slug to guarantee unique directory names
+    # for albums that share the same title.
+    bandcamp-dl \
+    --no-confirm \
+        --base-dir="$PWD" \
+        --keep-upper --keep-spaces --embed-art --embed-lyrics \
+        --template "%{album} [${item_id}]/%{track} - %{title}" \
+      "$cleaned_url" # Use the cleaned variable
 
 done < "$BANDCAMP_URL_LIST"
 

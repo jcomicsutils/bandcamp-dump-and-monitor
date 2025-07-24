@@ -25,7 +25,26 @@ SUCCESS_MESSAGE = "--> All downloads finished."
 MAX_FAILURES = 5
 
 # The time to wait in seconds after the script stops before restarting it.
-WAIT_TIME_SECONDS = 60
+WAIT_TIME_SECONDS = 15
+
+def is_list_file_empty(filename):
+    """
+    Checks if the URL list file is non-existent or only contains whitespace.
+    """
+    if not os.path.isfile(filename):
+        return True
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    # Found a non-empty line
+                    return False
+        # No non-empty lines were found
+        return True
+    except Exception as e:
+        print(f"\nError checking if file is empty '{filename}': {e}")
+        # Assume it's not empty to prevent accidental deletion
+        return False
 
 def remove_urls_from_list(urls_to_remove, filename):
     """
@@ -78,6 +97,7 @@ def main():
     """
     Main function to run the monitoring and restarting logic.
     """
+    monitor_script_name = sys.argv[0]
     if not os.path.isfile(SCRIPT_TO_RUN):
         print(f"Error: The script '{SCRIPT_TO_RUN}' was not found in this directory.")
         sys.exit(1)
@@ -187,7 +207,28 @@ def main():
             time.sleep(WAIT_TIME_SECONDS)
             print("-" * 30)
         
-        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitor has finished its job. Exiting.")
+        # --- Final Cleanup Check ---
+        print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Monitor has finished its job.")
+        
+        if is_list_file_empty(URL_LIST_FILE):
+            print(f"'{URL_LIST_FILE}' is empty. Commencing self-destruct sequence...")
+            try:
+                if os.path.isfile(URL_LIST_FILE):
+                    print(f"Deleting '{URL_LIST_FILE}'...")
+                    os.remove(URL_LIST_FILE)
+                
+                print(f"Deleting '{SCRIPT_TO_RUN}'...")
+                os.remove(SCRIPT_TO_RUN)
+
+                print(f"Deleting self ('{monitor_script_name}')... Goodbye!")
+                os.remove(monitor_script_name)
+            except OSError as e:
+                print(f"\nError during self-destruct sequence: {e}")
+                print("Cleanup may be incomplete.")
+                sys.exit(1)
+        else:
+            print("List file is not empty. Exiting normally.")
+
         sys.exit(0)
 
     except KeyboardInterrupt:
